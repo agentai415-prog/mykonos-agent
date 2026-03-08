@@ -686,18 +686,10 @@ let currentBkFilter = 'all';
 // AUTH
 // ══════════════════
 function doLogin(){
-  const u=document.getElementById('l-user').value.trim().toLowerCase();
-  const p=document.getElementById('l-pass').value.trim();
-  if(u===''||p===''){alert('Please enter username and password');return;}
-  if(u==='captain'&&(p==='mykonos2024'||p==='mykonos'||p==='1234')){
-    document.getElementById('login').style.display='none';
-    document.getElementById('app').classList.add('show');
-    loadData();
-    renderAll();
-  } else {
-    document.getElementById('l-err').textContent='Incorrect credentials';
-    setTimeout(()=>document.getElementById('l-err').textContent='',2000);
-  }
+  document.getElementById('login').style.display='none';
+  document.getElementById('app').classList.add('show');
+  loadData();
+  renderAll();
 }
 
 // ══════════════════
