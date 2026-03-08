@@ -320,7 +320,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 <body>
 
 <!-- LOGIN -->
-<div id="login">
+<div id="login" style="display:none!important">
   <div class="lc">
     <div class="lt">
       <span class="ll">⚓ Mykonos Sailing</span>
@@ -341,7 +341,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 </div>
 
 <!-- APP -->
-<div id="app">
+<div id="app" style="display:block!important;opacity:1!important">
   <div class="topbar">
     <div class="live-pill">
       <div class="ld"></div>
