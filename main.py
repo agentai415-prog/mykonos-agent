@@ -134,7 +134,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .lerr{color:var(--red);font-size:12px;text-align:center;min-height:16px;margin-top:8px;}
 
 /* SHELL */
-#app{display:none;height:100%;flex-direction:column;position:relative;z-index:1;}
+#app{display:flex;height:100%;flex-direction:column;position:relative;z-index:1;}
 #app.show{display:flex;}
 
 /* TOPBAR */
