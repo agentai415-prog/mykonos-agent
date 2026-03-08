@@ -341,7 +341,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 </div>
 
 <!-- APP -->
-<div id="app" style="display:block!important;opacity:1!important">
+<div id="app" class="show" style="display:block!important;opacity:1!important">
   <div class="topbar">
     <div class="live-pill">
       <div class="ld"></div>
@@ -1277,6 +1277,7 @@ document.querySelectorAll('.modal-bg').forEach(m=>{
   m.addEventListener('click',function(e){if(e.target===this)this.classList.remove('open');});
 });
 </script>
+<script>document.addEventListener("DOMContentLoaded",function(){loadData();renderAll();});</script>
 </body>
 </html>
 '''
