@@ -4,7 +4,11 @@ import requests, os, json
 
 app = Flask(__name__)
 CORS(app, origins="*")
-CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
+
+CLAUDE_API_KEY   = os.environ.get("CLAUDE_API_KEY", "")
+WA_TOKEN         = os.environ.get("WA_TOKEN", "")        # WhatsApp Access Token
+WA_PHONE_ID      = os.environ.get("WA_PHONE_ID", "")     # Phone Number ID
+VERIFY_TOKEN     = os.environ.get("VERIFY_TOKEN", "mykonos2024")
 
 FLEET_STORE = {"fleet": [
   {"id":1,"name":"Toro Bianco Lagoon 500","type":"Catamaran","guests":31,"crew":3,"size":"50ft","active":True,"emoji":"🛥️"},
@@ -17,6 +21,9 @@ FLEET_STORE = {"fleet": [
   {"id":8,"name":"Numarine M/Y Fly","type":"Motor Yacht","guests":10,"crew":2,"size":"56ft","active":True,"emoji":"🛳️"},
   {"id":9,"name":"Pershing 40ft","type":"Motor Yacht","guests":10,"crew":2,"size":"40ft","active":True,"emoji":"🚤"},
 ]}
+
+# In-memory conversation history per user {wa_id: [messages]}
+CONVERSATIONS = {}
 
 DASHBOARD = '''<!DOCTYPE html>
 <html lang="en" dir="ltr">
@@ -1214,13 +1221,181 @@ document.querySelectorAll('.modal-bg').forEach(m=>{
 </html>
 '''
 
+# ── CUSTOMER SYSTEM PROMPT ─────────────────────────────────────
+def build_customer_prompt():
+    active = [f for f in FLEET_STORE["fleet"] if f.get("active")]
+    fleet_list = "\n".join([
+        f'- {f["name"]} ({f["type"]}, {f["size"]}, max {f["guests"]} guests + {f["crew"]} crew)'
+        for f in active
+    ])
+    return f"""You are the booking assistant for Mykonos Sailing, a premier yacht charter company in Mykonos, Greece.
+
+You ONLY help customers with bookings and questions about cruises.
+NEVER discuss internal business data, revenue, number of bookings, or any operational information.
+
+COMPANY: Mykonos Sailing | mykonossailing.gr | @mykonossailing
+DEPARTURE: Ornos Bay, small dock on left side of beach
+LICENSE: MHTE 07.26.E.70.00.00459.0.1 (ISO certified)
+
+AVAILABLE FLEET:
+{fleet_list}
+
+CRUISES:
+1. 5hr South Coast (10–3pm or 3:30–8:30pm) — Psarou, Paradise, Super Paradise, Elia + more. Private or Semi-Private.
+2. 5hr Delos & Rhenia (10–3pm or 3:30–8:30pm) — UNESCO Delos + crystal waters of Rhenia. Private or Semi-Private.
+3. 3hr Sunset Cruise (5:30pm–sunset) — Greek appetizers, wine, magic golden hour.
+4. 8hr Full Day: Delos+Rhenia+South (10–6pm) — Includes guided Delos tour.
+5. 8hr Full Day South Coast (10–6pm) — All hidden and famous beaches.
+6. 3-Day Charter: Mykonos→Paros→Naxos
+7. 3-Day Charter: Mykonos→Syros→Antiparos
+8. Multi-Day Tailor Made — custom route, any islands.
+
+ALL CRUISES INCLUDE: ✓ Lunch/dinner ✓ Unlimited drinks ✓ Beach towels ✓ Snorkeling/SUP ✓ Music (Bluetooth) ✓ Professional crew
+NOT INCLUDED: Hotel transfers (can arrange for extra), gratuities, Seabob (extra)
+
+PRICING: Never give specific prices. Say pricing depends on vessel, group size, and season — offer to send a custom quote.
+
+BOOKING INFO TO COLLECT: name, email, cruise type, private/semi-private, date, number of guests, special requests.
+
+PERSONALITY: Warm, enthusiastic, loves the Aegean. Be conversational. Reply in SAME language as customer (English, Arabic, Greek, French, etc).
+Keep WhatsApp replies concise — no long paragraphs. Use line breaks.
+
+When all booking info is collected, end your message with exactly:
+BOOKING_DATA:{{"name":"...","email":"...","cruise":"...","type":"Private/Semi-Private","date":"...","guests":"...","notes":"..."}}"""
+
+
+# ── WHATSAPP HELPERS ───────────────────────────────────────────
+def send_wa_message(to, text):
+    """Send a WhatsApp text message"""
+    if not WA_TOKEN or not WA_PHONE_ID:
+        print("WA credentials missing")
+        return
+    url = f"https://graph.facebook.com/v19.0/{WA_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    print(f"WA send to {to}: {r.status_code}")
+    return r
+
+
+def call_claude(messages, system_prompt):
+    """Call Claude API"""
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        },
+        json={
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "system": system_prompt,
+            "messages": messages
+        },
+        timeout=30
+    )
+    data = r.json()
+    if "content" in data:
+        return data["content"][0]["text"]
+    return None
+
+
+# ── WHATSAPP WEBHOOK ───────────────────────────────────────────
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    """Meta webhook verification"""
+    mode      = request.args.get("hub.mode")
+    token     = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("Webhook verified ✓")
+        return challenge, 200
+    return "Forbidden", 403
+
+
+@app.route("/webhook", methods=["POST"])
+def receive_message():
+    """Receive WhatsApp messages and reply with Claude"""
+    try:
+        data = request.get_json()
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+
+        for msg in messages:
+            wa_id   = msg.get("from")          # sender phone number
+            msg_type = msg.get("type")
+
+            if msg_type == "text":
+                user_text = msg["text"]["body"]
+                print(f"Message from {wa_id}: {user_text}")
+
+                # Get or create conversation history
+                if wa_id not in CONVERSATIONS:
+                    CONVERSATIONS[wa_id] = []
+
+                CONVERSATIONS[wa_id].append({
+                    "role": "user",
+                    "content": user_text
+                })
+
+                # Keep last 20 messages only (memory management)
+                if len(CONVERSATIONS[wa_id]) > 20:
+                    CONVERSATIONS[wa_id] = CONVERSATIONS[wa_id][-20:]
+
+                # Call Claude
+                reply = call_claude(
+                    CONVERSATIONS[wa_id],
+                    build_customer_prompt()
+                )
+
+                if reply:
+                    # Add AI reply to history
+                    CONVERSATIONS[wa_id].append({
+                        "role": "assistant",
+                        "content": reply
+                    })
+
+                    # Remove BOOKING_DATA before sending to customer
+                    clean_reply = reply
+                    if "BOOKING_DATA:" in reply:
+                        idx = reply.find("BOOKING_DATA:")
+                        clean_reply = reply[:idx].strip()
+
+                    # Send to WhatsApp
+                    send_wa_message(wa_id, clean_reply)
+
+                    # Log booking if detected
+                    if "BOOKING_DATA:" in reply:
+                        print(f"NEW BOOKING from {wa_id}: {reply[reply.find('BOOKING_DATA:'):]}")
+
+    except Exception as e:
+        print(f"Webhook error: {e}")
+
+    # Always return 200 to Meta
+    return jsonify({"status": "ok"}), 200
+
+
+# ── ADMIN / DASHBOARD ROUTES ───────────────────────────────────
 @app.route("/", methods=["GET"])
 def home():
     return Response(DASHBOARD, mimetype="text/html")
 
+
 @app.route("/fleet", methods=["GET"])
 def get_fleet():
     return jsonify(FLEET_STORE)
+
 
 @app.route("/fleet", methods=["POST"])
 def set_fleet():
@@ -1230,11 +1405,13 @@ def set_fleet():
         FLEET_STORE["fleet"] = data["fleet"]
     return jsonify({"ok": True})
 
+
 @app.route("/chat", methods=["POST"])
 def chat():
+    """Dashboard chat proxy (admin + customer test)"""
     try:
         data = request.get_json()
-        messages = data.get("messages", [])
+        messages     = data.get("messages", [])
         system_prompt = data.get("system", "")
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -1254,6 +1431,7 @@ def chat():
         return jsonify(r.json()), r.status_code
     except Exception as e:
         return jsonify({"error": {"message": str(e)}}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
